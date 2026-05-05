@@ -1605,6 +1605,11 @@ let consolFilters2 = { year: 'all', mes: 'all', cuenta: 'all' };
 // ─── PIVOT TIPO POR HOJA ──────────────────────────────────────────
 let sheetPivotTipo2 = {}; // { idx: 'all' | 'Ingreso' | 'Egreso' }
 
+// ─── PIVOT SORT POR HOJA ──────────────────────────────────────────
+// col: 'cat' | 'total' | 0..11 (índice del mes)
+// dir: 'asc' | 'desc'
+let sheetPivotSort2 = {}; // { idx: { col, dir } }
+
 // ─── CONFIGURACIÓN DE HOJAS (Sistema de Mapeo Dinámico) ──────────
 // Para agregar nuevas hojas en el futuro, solo agrega una entrada aquí.
 const SHEET_PATTERNS = [
@@ -3891,7 +3896,6 @@ function renderSheetPivot2(sheetName, idx, rows) {
     return;
   }
 
-  // Meses activos (ordenados)
   const monthSet = new Set(pivotRows.map(r => r.mes).filter(m => m != null));
   const months   = [...monthSet].sort((a, b) => a - b);
 
@@ -3907,28 +3911,87 @@ function renderSheetPivot2(sheetName, idx, rows) {
     const cat  = r.descripcion_corta || 'Sin categoría';
     const m    = r.mes;
     if (m == null) continue;
-    if (!sections[tipo])       sections[tipo]       = {};
-    if (!sections[tipo][cat])  sections[tipo][cat]  = {};
+    if (!sections[tipo])      sections[tipo]      = {};
+    if (!sections[tipo][cat]) sections[tipo][cat] = {};
     sections[tipo][cat][m] = (sections[tipo][cat][m] || 0) + r.monto;
   }
 
   const tipos = ['Ingreso', 'Egreso'].filter(t => sections[t]);
 
-  // ── Encabezado de tabla ──
-  const mHeaders = months.map(m =>
-    `<th class="text-right pivot-month-hdr">${MONTHS_ES[m]}</th>`
+  // ── Detectar categorías duplicadas (misma escritura normalizada) ──
+  const normalizeCat = s => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+  const allCats = tipos.flatMap(t => Object.keys(sections[t] || {}));
+  const normMap = {};
+  const dupPairs = [];
+  for (const cat of allCats) {
+    const n = normalizeCat(cat);
+    if (normMap[n] && normMap[n] !== cat) {
+      dupPairs.push([normMap[n], cat]);
+    } else {
+      normMap[n] = cat;
+    }
+  }
+  let dupWarning = '';
+  if (dupPairs.length) {
+    const pairs = dupPairs.slice(0, 5).map(([a, b]) =>
+      `<span class="pivot-dup-pair">"${escHtml(a)}" / "${escHtml(b)}"</span>`
+    ).join('');
+    dupWarning = `<div class="pivot-dup-warning">
+      <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="flex-shrink:0"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+      Posibles categorías duplicadas con escritura diferente: ${pairs}
+      ${dupPairs.length > 5 ? `<em>y ${dupPairs.length - 5} más…</em>` : ''}
+    </div>`;
+  }
+
+  // ── Sort state ──
+  const ss  = sheetPivotSort2[idx] || { col: 'total', dir: 'desc' };
+  const sortIcon = (col) => {
+    if (ss.col !== col) return '<span class="pvt-sort-idle">⇅</span>';
+    return ss.dir === 'desc' ? '<span class="pvt-sort-on">▼</span>' : '<span class="pvt-sort-on">▲</span>';
+  };
+
+  // ── Encabezados ordenables ──
+  const mHeaders = months.map((m, mi) =>
+    `<th class="text-right pivot-month-hdr pivot-sortable" onclick="pivotSort(${idx},${mi})">
+      <span class="pvt-th-label">${MONTHS_ES[m]}</span>${sortIcon(mi)}
+    </th>`
   ).join('');
 
-  let html = `
+  let html = dupWarning + `
     <table class="data-table pivot-table">
       <thead>
         <tr>
-          <th class="pivot-cat-hdr">Categoría</th>
+          <th class="pivot-cat-hdr pivot-sortable" onclick="pivotSort(${idx},'cat')">
+            <span class="pvt-th-label">Categoría</span>${sortIcon('cat')}
+          </th>
           ${mHeaders}
-          <th class="text-right pivot-total-hdr">Total</th>
+          <th class="text-right pivot-total-hdr pivot-sortable" onclick="pivotSort(${idx},'total')">
+            <span class="pvt-th-label">Total</span>${sortIcon('total')}
+          </th>
         </tr>
       </thead>
       <tbody>`;
+
+  // Sort helper
+  const sortEntries = (entries) => {
+    const { col, dir } = ss;
+    if (col === 'cat') {
+      return [...entries].sort((a, b) =>
+        dir === 'asc' ? a.cat.localeCompare(b.cat, 'es') : b.cat.localeCompare(a.cat, 'es')
+      );
+    } else if (col === 'total') {
+      return [...entries].sort((a, b) =>
+        dir === 'asc' ? a.total - b.total : b.total - a.total
+      );
+    } else if (typeof col === 'number') {
+      const m = months[col];
+      return [...entries].sort((a, b) => {
+        const va = a.byMonth[m] || 0, vb = b.byMonth[m] || 0;
+        return dir === 'asc' ? va - vb : vb - va;
+      });
+    }
+    return entries;
+  };
 
   for (const tipo of tipos) {
     const tipoColor = tipo === 'Ingreso' ? 'var(--income)' : 'var(--expense)';
@@ -3941,16 +4004,12 @@ function renderSheetPivot2(sheetName, idx, rows) {
       </td>
     </tr>`;
 
-    // Categorías ordenadas por total desc
-    const catEntries = Object.entries(sections[tipo])
-      .map(([cat, byMonth]) => ({
-        cat,
-        byMonth,
-        total: Object.values(byMonth).reduce((s, v) => s + v, 0),
-      }))
-      .sort((a, b) => b.total - a.total);
+    const rawEntries = Object.entries(sections[tipo]).map(([cat, byMonth]) => ({
+      cat, byMonth, total: Object.values(byMonth).reduce((s, v) => s + v, 0),
+    }));
+    const catEntries = sortEntries(rawEntries);
+    const MAX_CATS   = 80;
 
-    const MAX_CATS = 80;
     catEntries.slice(0, MAX_CATS).forEach(({ cat, byMonth, total }) => {
       const cells = months.map(m => {
         const v = byMonth[m] || 0;
@@ -3973,12 +4032,10 @@ function renderSheetPivot2(sheetName, idx, rows) {
       </td></tr>`;
     }
 
-    // Subtotal de la sección
+    // Subtotal (siempre sobre todas las entradas, independiente del orden)
     const subByMonth = {};
-    months.forEach(m => {
-      subByMonth[m] = catEntries.reduce((s, e) => s + (e.byMonth[m] || 0), 0);
-    });
-    const subTotal = catEntries.reduce((s, e) => s + e.total, 0);
+    months.forEach(m => { subByMonth[m] = rawEntries.reduce((s, e) => s + (e.byMonth[m] || 0), 0); });
+    const subTotal = rawEntries.reduce((s, e) => s + e.total, 0);
     const subCells = months.map(m =>
       `<td class="text-right pivot-sub-col" style="color:${tipoColor}">
          <strong>${formatMoney(subByMonth[m])}</strong>
@@ -3986,9 +4043,7 @@ function renderSheetPivot2(sheetName, idx, rows) {
     ).join('');
 
     html += `<tr class="pivot-subtotal-row">
-      <td class="pivot-cat-cell">
-        <strong>Subtotal ${tipo === 'Ingreso' ? 'Ingresos' : 'Egresos'}</strong>
-      </td>
+      <td class="pivot-cat-cell"><strong>Subtotal ${tipo === 'Ingreso' ? 'Ingresos' : 'Egresos'}</strong></td>
       ${subCells}
       <td class="text-right pivot-total-col" style="color:${tipoColor}">
         <strong>${formatMoney(subTotal)}</strong>
@@ -3996,27 +4051,23 @@ function renderSheetPivot2(sheetName, idx, rows) {
     </tr>`;
   }
 
-  // ── Fila de Balance Neto (solo si se muestran ambos) ──
+  // Balance Neto
   if (tipos.length === 2) {
-    const ingTotals = months.map(m =>
-      Object.values(sections['Ingreso']).reduce((s, bm) => s + (bm[m] || 0), 0)
-    );
-    const egrTotals = months.map(m =>
-      Object.values(sections['Egreso']).reduce((s, bm) => s + (bm[m] || 0), 0)
-    );
-    const balTotals = months.map((_, i) => ingTotals[i] - egrTotals[i]);
-    const totalBal  = balTotals.reduce((s, v) => s + v, 0);
-    const balCells  = balTotals.map(v => {
+    const ingT  = months.map(m => Object.values(sections['Ingreso']).reduce((s, bm) => s + (bm[m] || 0), 0));
+    const egrT  = months.map(m => Object.values(sections['Egreso']).reduce((s, bm) => s + (bm[m] || 0), 0));
+    const balT  = months.map((_, i) => ingT[i] - egrT[i]);
+    const totBal = balT.reduce((s, v) => s + v, 0);
+    const balCells = balT.map(v => {
       const c = v >= 0 ? 'var(--income)' : 'var(--expense)';
       return `<td class="text-right pivot-balance-col" style="color:${c}"><strong>${formatMoney(v)}</strong></td>`;
     }).join('');
-    const balC = totalBal >= 0 ? 'var(--income)' : 'var(--expense)';
+    const balC = totBal >= 0 ? 'var(--income)' : 'var(--expense)';
 
     html += `<tr class="pivot-balance-row">
       <td class="pivot-cat-cell"><strong>BALANCE NETO</strong></td>
       ${balCells}
       <td class="text-right pivot-total-col" style="color:${balC}">
-        <strong>${formatMoney(totalBal)}</strong>
+        <strong>${formatMoney(totBal)}</strong>
       </td>
     </tr>`;
   }
@@ -4037,9 +4088,28 @@ function setPivotTipo(idx, tipo, btn) {
   if (!name) return;
   const f    = getSheetFilter2(name);
   let rows   = processedData2[name] || [];
-  // Aplicar filtros globales igual que applySheetFilters2 (sin re-renderizar tabla)
   if (f.year   !== 'all') rows = rows.filter(r => String(r.year) === String(f.year));
   if (f.mes    !== 'all') rows = rows.filter(r => String(r.mes)  === String(f.mes));
+  if (f.cuenta !== 'all') rows = rows.filter(r => r.cuenta === f.cuenta);
+  renderSheetPivot2(name, idx, rows);
+}
+
+/** Ordena la tabla dinámica por columna y re-renderiza. */
+function pivotSort(idx, col) {
+  const cur = sheetPivotSort2[idx] || { col: 'total', dir: 'desc' };
+  // Mismo col → invertir dirección; distinto col → desc por defecto (asc para 'cat')
+  const dir = cur.col === col
+    ? (cur.dir === 'desc' ? 'asc' : 'desc')
+    : (col === 'cat' ? 'asc' : 'desc');
+  sheetPivotSort2[idx] = { col, dir };
+
+  const name = sheetIdxToName2[idx];
+  if (!name) return;
+  const f    = getSheetFilter2(name);
+  let rows   = processedData2[name] || [];
+  if (f.year   !== 'all') rows = rows.filter(r => String(r.year) === String(f.year));
+  if (f.mes    !== 'all') rows = rows.filter(r => String(r.mes)  === String(f.mes));
+  if (f.tipo   !== 'all') rows = rows.filter(r => r.tipo_registro === f.tipo);
   if (f.cuenta !== 'all') rows = rows.filter(r => r.cuenta === f.cuenta);
   renderSheetPivot2(name, idx, rows);
 }
