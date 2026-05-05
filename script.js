@@ -2744,7 +2744,9 @@ async function exportConsolidatedExcel() {
     row.height = 16;
   });
 
-  // ── HOJAS POR BANCO (Excel Tables + SUBTOTAL dinámico) ───────────
+  // ── HOJAS POR BANCO (Excel Tables + SUBTOTAL dinámico + Pivot formulas) ─
+  // Layout columnas: A=Fecha B=Año C=Mes D=Hoja E=TipoCuenta F=Moneda
+  //                  G=Descripción H=Categoría I=Ingreso J=Egreso
   const bankSubtotalInfo = {}; // { banco: { wsName, subtotalRowNum } }
 
   for (const banco of bancos) {
@@ -2752,10 +2754,10 @@ async function exportConsolidatedExcel() {
     const wsName = banco.substring(0, 31);
     const wsB    = wb.addWorksheet(wsName);
 
-    // Anchos de columna (sin ws.columns para no duplicar encabezado con addTable)
-    [13, 7, 12, 22, 18, 8, 55, 16, 16].forEach((w, i) => { wsB.getColumn(i + 1).width = w; });
+    // Anchos de columna (10 cols: A-J)
+    [13, 7, 12, 22, 18, 8, 40, 20, 16, 16].forEach((w, i) => { wsB.getColumn(i + 1).width = w; });
 
-    // Datos para la tabla
+    // Datos para la tabla (10 columnas, H = Categoría, I = Ingreso, J = Egreso)
     const tableRows = bRows.map(r => {
       const tipo   = r.tipo_registro;
       const mesNum = r.fecha ? r.fecha.getMonth() : null;
@@ -2766,13 +2768,14 @@ async function exportConsolidatedExcel() {
         r.hoja,
         r.tipo_cuenta,
         r.moneda,
-        r.descripcion || r.descripcion_corta || '',
-        tipo === 'Ingreso' ? r.monto : null,
-        tipo === 'Egreso'  ? r.monto : null,
+        r.descripcion || r.descripcion_corta || '',        // G: Descripción completa
+        r.descripcion_corta || r.descripcion || 'Sin categoría', // H: Categoría (clave para pivot)
+        tipo === 'Ingreso' ? r.monto : null,               // I: Ingreso
+        tipo === 'Egreso'  ? r.monto : null,               // J: Egreso
       ];
     });
 
-    // Crear Tabla de Excel (ListObject) — esto activa filtros nativos de Excel
+    // Crear Tabla de Excel (ListObject) — filtros nativos + referencias estructuradas
     const tableName = `T_${wsName.replace(/[^a-zA-Z0-9]/g, '_').replace(/^_+/, '')}`;
     wsB.addTable({
       name:      tableName,
@@ -2788,28 +2791,28 @@ async function exportConsolidatedExcel() {
         { name: 'Tipo Cuenta', filterButton: true },
         { name: 'Moneda',      filterButton: true },
         { name: 'Descripción', filterButton: true },
+        { name: 'Categoría',   filterButton: true },
         { name: 'Ingreso',     filterButton: true },
         { name: 'Egreso',      filterButton: true },
       ],
       rows: tableRows,
     });
 
-    // Estilo encabezado (sobreescribe el estilo de tabla)
     applyHeader(wsB.getRow(1));
 
-    // Formato por celda (fechas, montos, colores de fila)
+    // Formato por celda
     bRows.forEach((r, ri) => {
-      const rowNum = ri + 2; // 1-indexed, +1 por encabezado
+      const rowNum = ri + 2;
       const tipo   = r.tipo_registro;
       const isAlt  = ri % 2 === 0;
 
       if (r.fecha) {
-        const fc = wsB.getCell(`A${rowNum}`);
-        fc.value  = r.fecha;
-        fc.numFmt = 'dd/mm/yyyy';
+        wsB.getCell(`A${rowNum}`).value  = r.fecha;
+        wsB.getCell(`A${rowNum}`).numFmt = 'dd/mm/yyyy';
       }
 
-      ['H','I'].forEach((col, ki) => {
+      // I = Ingreso, J = Egreso
+      ['I','J'].forEach((col, ki) => {
         const c = wsB.getCell(`${col}${rowNum}`);
         if (c.value != null) {
           c.numFmt = '$#,##0.00';
@@ -2818,28 +2821,28 @@ async function exportConsolidatedExcel() {
         }
       });
 
-      const bg     = tipo === 'Ingreso' ? C.GREEN_MED : tipo === 'Egreso' ? 'FEE2E2' : (isAlt ? C.GREY_LIGHT : C.WHITE);
-      const wsRow  = wsB.getRow(rowNum);
+      const bg    = tipo === 'Ingreso' ? C.GREEN_MED : tipo === 'Egreso' ? 'FEE2E2' : (isAlt ? C.GREY_LIGHT : C.WHITE);
+      const wsRow = wsB.getRow(rowNum);
       wsRow.height = 16;
-      for (let col = 1; col <= 9; col++) {
+      for (let col = 1; col <= 10; col++) {
         wsB.getCell(rowNum, col).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF' + bg } };
       }
     });
 
-    // ── FILA SUBTOTAL DINÁMICA (responde a filtros de Excel) ──────────
-    const subtotalRowNum = bRows.length + 3; // header(1) + data(N) + fila vacía + subtotal
-    const lblCell = wsB.getCell(`G${subtotalRowNum}`);
+    // ── FILA SUBTOTAL DINÁMICA ────────────────────────────────────────
+    const subtotalRowNum = bRows.length + 3;
+    const lblCell = wsB.getCell(`H${subtotalRowNum}`);
     lblCell.value     = 'TOTAL VISIBLE →';
     lblCell.alignment = { horizontal: 'right', vertical: 'middle' };
     Object.assign(lblCell.style, totalRowStyle);
 
-    const ingSubCell = wsB.getCell(`H${subtotalRowNum}`);
+    const ingSubCell = wsB.getCell(`I${subtotalRowNum}`);
     ingSubCell.value  = { formula: `SUBTOTAL(109,${tableName}[Ingreso])` };
     ingSubCell.numFmt = '$#,##0.00';
     Object.assign(ingSubCell, { style: { ...totalRowStyle } });
     ingSubCell.font   = { ...totalRowStyle.font, bold: true, color: { argb: 'FF' + C.TEXT_GREEN } };
 
-    const egrSubCell = wsB.getCell(`I${subtotalRowNum}`);
+    const egrSubCell = wsB.getCell(`J${subtotalRowNum}`);
     egrSubCell.value  = { formula: `SUBTOTAL(109,${tableName}[Egreso])` };
     egrSubCell.numFmt = '$#,##0.00';
     Object.assign(egrSubCell, { style: { ...totalRowStyle } });
@@ -2847,14 +2850,12 @@ async function exportConsolidatedExcel() {
 
     wsB.getRow(subtotalRowNum).height = 19;
 
-    // Balance en la fila siguiente
     const balRowNum  = subtotalRowNum + 1;
-    const balLblCell = wsB.getCell(`G${balRowNum}`);
-    balLblCell.value     = 'BALANCE →';
-    balLblCell.alignment = { horizontal: 'right', vertical: 'middle' };
-    Object.assign(balLblCell.style, totalRowStyle);
-    const balCell = wsB.getCell(`H${balRowNum}`);
-    balCell.value  = { formula: `H${subtotalRowNum}-I${subtotalRowNum}` };
+    wsB.getCell(`H${balRowNum}`).value     = 'BALANCE →';
+    wsB.getCell(`H${balRowNum}`).alignment = { horizontal: 'right', vertical: 'middle' };
+    Object.assign(wsB.getCell(`H${balRowNum}`).style, totalRowStyle);
+    const balCell = wsB.getCell(`I${balRowNum}`);
+    balCell.value  = { formula: `I${subtotalRowNum}-J${subtotalRowNum}` };
     balCell.numFmt = '$#,##0.00';
     Object.assign(balCell, { style: { ...totalRowStyle } });
     balCell.font   = { ...totalRowStyle.font, bold: true };
@@ -2862,11 +2863,19 @@ async function exportConsolidatedExcel() {
 
     bankSubtotalInfo[banco] = { wsName, subtotalRowNum };
 
-    // Congelar primera fila
     wsB.views = [{ state: 'frozen', xSplit: 0, ySplit: 1 }];
 
-    // ── Tabla dinámica a la DERECHA ──────────────────────────────────
-    _addPivotToSheet(wsB, bRows, 10, C);
+    // ── Tabla dinámica a la DERECHA (startCol=11 → separator K, pivot desde L) ─
+    // dynParams indica las columnas de la tabla de movimientos para fórmulas dinámicas
+    _addPivotToSheet(wsB, bRows, 11, C, {
+      firstDataRow: 2,
+      lastDataRow:  bRows.length + 1,
+      catCol:       'H',   // Categoría
+      mesCol:       'C',   // Mes (texto: "Enero", "Febrero"...)
+      ingCol:       'I',   // Ingreso
+      egrCol:       'J',   // Egreso
+      yrCol:        'B',   // Año (para el indicador de año)
+    });
   }
 
   // ── HOJA: Resumen por institución (fórmulas dinámicas → SUBTOTAL) ─
@@ -2877,8 +2886,8 @@ async function exportConsolidatedExcel() {
   const resTableRows = bancos.map(banco => {
     const { wsName, subtotalRowNum } = bankSubtotalInfo[banco];
     // Referencias que apuntan a las celdas SUBTOTAL de cada pestaña
-    const ingRef  = `'${wsName}'!H${subtotalRowNum}`;
-    const egrRef  = `'${wsName}'!I${subtotalRowNum}`;
+    const ingRef  = `'${wsName}'!I${subtotalRowNum}`;
+    const egrRef  = `'${wsName}'!J${subtotalRowNum}`;
     return [
       banco,
       { formula: ingRef },
@@ -2964,13 +2973,16 @@ async function exportConsolidatedExcel() {
 
 /**
  * Agrega una tabla dinámica (categoría × mes) a la derecha de la hoja activa.
- * startCol: índice 1-based donde empieza el bloque de pivot.
+ * startCol : índice 1-based de la columna separadora (pivot empieza en startCol+1).
+ * dynParams : { firstDataRow, lastDataRow, catCol, mesCol, ingCol, egrCol, yrCol }
+ *             Si se pasa, las celdas de la tabla usan fórmulas SUMPRODUCT+SUBTOTAL
+ *             que responden dinámicamente a los filtros de Excel.
  */
-function _addPivotToSheet(ws, bRows, startCol, C) {
+function _addPivotToSheet(ws, bRows, startCol, C, dynParams) {
   const months = [...new Set(bRows.map(r => r.mes).filter(m => m != null))].sort((a, b) => a - b);
   if (!months.length) return;
 
-  // ── Acumular datos ──
+  // ── Acumular datos (para saber qué categorías existen, aunque los valores sean fórmulas) ──
   const sections = {};
   for (const r of bRows) {
     const tipo = r.tipo_registro || 'Sin tipo';
@@ -2982,12 +2994,26 @@ function _addPivotToSheet(ws, bRows, startCol, C) {
     sections[tipo][cat][m] = (sections[tipo][cat][m] || 0) + r.monto;
   }
 
+  const dyn = dynParams || null;
+
+  // Helper: número de columna → letra (1-indexed)
+  const colL = n => {
+    let l = '';
+    while (n > 0) { const rem = (n - 1) % 26; l = String.fromCharCode(65 + rem) + l; n = Math.floor((n - 1) / 26); }
+    return l;
+  };
+
   // ── Estilos ──
   const pivotHeaderStyle = {
     fill:      { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E293B' } },
     font:      { bold: true, color: { argb: 'FFFFFFFF' }, name: 'Calibri', size: 10 },
     alignment: { horizontal: 'center', vertical: 'middle' },
     border:    { bottom: { style: 'thin', color: { argb: 'FF64748B' } } },
+  };
+  const yearHeaderStyle = {
+    fill:      { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0F172A' } },
+    font:      { bold: true, color: { argb: 'FF10B981' }, name: 'Calibri', size: 10 },
+    alignment: { horizontal: 'center', vertical: 'middle' },
   };
   const sectionStyle = (tipo) => ({
     fill: { type: 'pattern', pattern: 'solid',
@@ -3002,31 +3028,62 @@ function _addPivotToSheet(ws, bRows, startCol, C) {
             color: { argb: 'FF' + (tipo === 'Ingreso' ? '065F46' : '991B1B') } },
   });
   const balStyle = {
-    fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2E8F0' } },
+    fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E7FF' } },
     font: { bold: true, name: 'Calibri', size: 10, color: { argb: 'FF1E293B' } },
   };
 
-  // Columna separadora
-  ws.getColumn(startCol).width = 3;
+  ws.getColumn(startCol).width = 3; // separador
 
-  // Encabezados
+  // ── Posiciones columna pivot ──
+  const pivCatColNum   = startCol + 1;  // columna CATEGORÍA
+  const firstMonthCol  = startCol + 2;  // primera columna mes
+  const totColNum      = startCol + 2 + months.length;
+  const pivCatColL     = colL(pivCatColNum);
+
   let pivotRow = 1;
+
+  // ── Fila 1: Indicador de año (fórmula dinámica o estático) ────────────
+  if (dyn) {
+    const fdr = dyn.firstDataRow, ldr = dyn.lastDataRow;
+    const yrRange  = `$${dyn.yrCol}$${fdr}:$${dyn.yrCol}$${ldr}`;
+    const catRange = `$${dyn.catCol}$${fdr}:$${dyn.catCol}$${ldr}`;
+    const yearFml  = `IF(SUBTOTAL(2,${yrRange})=COUNTA(${catRange}),"Pivote · Todos los años","Pivote · Año "&TEXT(SUBTOTAL(104,${yrRange}),"0"))`;
+    const yearCell = ws.getCell(pivotRow, pivCatColNum);
+    yearCell.value = { formula: yearFml };
+    Object.assign(yearCell.style, yearHeaderStyle);
+    // Merge across all pivot columns
+    try { ws.mergeCells(pivotRow, pivCatColNum, pivotRow, totColNum); } catch(_) {}
+    ws.getRow(pivotRow).height = 18;
+  } else {
+    const staticYears = [...new Set(bRows.map(r => r.year).filter(Boolean))].sort();
+    const yearText    = staticYears.length ? staticYears.join(', ') : 'Todos los años';
+    const yearCell    = ws.getCell(pivotRow, pivCatColNum);
+    yearCell.value    = `Pivote · ${yearText}`;
+    Object.assign(yearCell.style, yearHeaderStyle);
+    try { ws.mergeCells(pivotRow, pivCatColNum, pivotRow, totColNum); } catch(_) {}
+    ws.getRow(pivotRow).height = 18;
+  }
+  pivotRow++;
+
+  // ── Fila 2: Encabezados de columna ────────────────────────────────────
   const hdrRow = ws.getRow(pivotRow);
-  hdrRow.getCell(startCol + 1).value = 'CATEGORÍA';
+  ws.getColumn(pivCatColNum).width = 30;
+  Object.assign(hdrRow.getCell(pivCatColNum).style, pivotHeaderStyle);
+  hdrRow.getCell(pivCatColNum).value = 'CATEGORÍA';
   months.forEach((m, i) => {
-    const c = hdrRow.getCell(startCol + 2 + i);
+    const c = hdrRow.getCell(firstMonthCol + i);
     c.value = MONTHS_LONG[m];
     Object.assign(c.style, pivotHeaderStyle);
-    ws.getColumn(startCol + 2 + i).width = 14;
+    ws.getColumn(firstMonthCol + i).width = 14;
   });
-  const totHdrCell = hdrRow.getCell(startCol + 2 + months.length);
-  totHdrCell.value = 'TOTAL';
-  Object.assign(totHdrCell.style, pivotHeaderStyle);
-  ws.getColumn(startCol + 2 + months.length).width = 16;
-  Object.assign(hdrRow.getCell(startCol + 1).style, pivotHeaderStyle);
-  ws.getColumn(startCol + 1).width = 30;
+  Object.assign(hdrRow.getCell(totColNum).style, pivotHeaderStyle);
+  hdrRow.getCell(totColNum).value = 'TOTAL';
+  ws.getColumn(totColNum).width = 16;
   hdrRow.height = 18;
   pivotRow++;
+
+  // Track subtotal row numbers for Balance Neto formula
+  let ingSubRowNum = null, egrSubRowNum = null;
 
   for (const tipo of ['Ingreso', 'Egreso']) {
     if (!sections[tipo]) continue;
@@ -3034,83 +3091,131 @@ function _addPivotToSheet(ws, bRows, startCol, C) {
     const subs = subtotalStyle(tipo);
 
     // Fila sección
-    const secRow = ws.getRow(pivotRow++);
+    const secRow   = ws.getRow(pivotRow);
     const secLabel = tipo === 'Ingreso' ? '↑ INGRESOS' : '↓ EGRESOS';
-    for (let c = startCol + 1; c <= startCol + 1 + months.length + 1; c++) {
-      secRow.getCell(c).value = c === startCol + 1 ? secLabel : null;
+    for (let c = pivCatColNum; c <= totColNum; c++) {
+      secRow.getCell(c).value = c === pivCatColNum ? secLabel : null;
       Object.assign(secRow.getCell(c).style, ss);
     }
     secRow.height = 17;
+    pivotRow++;
 
-    // Categorías ordenadas por total
     const catEntries = Object.entries(sections[tipo])
       .map(([cat, bm]) => ({ cat, bm, total: Object.values(bm).reduce((s, v) => s + v, 0) }))
       .sort((a, b) => b.total - a.total);
 
+    const firstCatRow = pivotRow;
+
     catEntries.forEach(({ cat, bm, total }) => {
-      const dr = ws.getRow(pivotRow++);
-      dr.getCell(startCol + 1).value = cat;
-      dr.getCell(startCol + 1).font  = { name: 'Calibri', size: 10 };
+      const dr         = ws.getRow(pivotRow);
+      const catNameCell = dr.getCell(pivCatColNum);
+      catNameCell.value = cat;
+      catNameCell.font  = { name: 'Calibri', size: 10 };
+      const catRef      = `${pivCatColL}${pivotRow}`; // e.g. "L5"
+
       months.forEach((m, i) => {
-        const v = bm[m] || 0;
-        if (v) {
-          const cell = dr.getCell(startCol + 2 + i);
-          cell.value  = v;
-          cell.numFmt = '$#,##0.00';
-          cell.font   = { name: 'Calibri', size: 10 };
+        const cell   = dr.getCell(firstMonthCol + i);
+        if (dyn) {
+          // SUMPRODUCT + SUBTOTAL(103,OFFSET) — responde a cualquier filtro de Excel
+          const fdr        = dyn.firstDataRow, ldr = dyn.lastDataRow;
+          const catRange   = `$${dyn.catCol}$${fdr}:$${dyn.catCol}$${ldr}`;
+          const mesRange   = `$${dyn.mesCol}$${fdr}:$${dyn.mesCol}$${ldr}`;
+          const amtCol     = tipo === 'Ingreso' ? dyn.ingCol : dyn.egrCol;
+          const amtRange   = `$${amtCol}$${fdr}:$${amtCol}$${ldr}`;
+          const visOFFSET  = `OFFSET($${dyn.catCol}$${fdr},ROW($${dyn.catCol}$${fdr}:$${dyn.catCol}$${ldr})-ROW($${dyn.catCol}$${fdr}),0,1)`;
+          const vis        = `SUBTOTAL(103,${visOFFSET})`;
+          cell.value       = { formula: `SUMPRODUCT((${catRange}=${catRef})*(${mesRange}="${MONTHS_LONG[m]}")*(${amtRange})*(${vis}))` };
+          cell.numFmt      = '$#,##0.00';
+          cell.font        = { name: 'Calibri', size: 10 };
+        } else {
+          const v = bm[m] || 0;
+          if (v) { cell.value = v; cell.numFmt = '$#,##0.00'; cell.font = { name: 'Calibri', size: 10 }; }
         }
       });
-      const tc = dr.getCell(startCol + 2 + months.length);
-      tc.value  = total;
-      tc.numFmt = '$#,##0.00';
-      tc.font   = { bold: true, name: 'Calibri', size: 10,
-                    color: { argb: 'FF' + (tipo === 'Ingreso' ? '065F46' : '991B1B') } };
+
+      // TOTAL de fila: suma de todos los meses de esa fila
+      const totCell = dr.getCell(totColNum);
+      if (dyn) {
+        const firstMonthRef = `${colL(firstMonthCol)}${pivotRow}`;
+        const lastMonthRef  = `${colL(firstMonthCol + months.length - 1)}${pivotRow}`;
+        totCell.value = { formula: `SUM(${firstMonthRef}:${lastMonthRef})` };
+      } else {
+        totCell.value = total;
+      }
+      totCell.numFmt = '$#,##0.00';
+      totCell.font   = { bold: true, name: 'Calibri', size: 10,
+                         color: { argb: 'FF' + (tipo === 'Ingreso' ? '065F46' : '991B1B') } };
       dr.height = 15;
+      pivotRow++;
     });
+
+    const lastCatRow = pivotRow - 1;
 
     // Subtotal sección
-    const subR = ws.getRow(pivotRow++);
-    subR.getCell(startCol + 1).value = `Subtotal ${tipo === 'Ingreso' ? 'Ingresos' : 'Egresos'}`;
-    const subTotal = catEntries.reduce((s, e) => s + e.total, 0);
+    const subR = ws.getRow(pivotRow);
+    subR.getCell(pivCatColNum).value = `Subtotal ${tipo === 'Ingreso' ? 'Ingresos' : 'Egresos'}`;
     months.forEach((m, i) => {
-      const sv = catEntries.reduce((s, e) => s + (e.bm[m] || 0), 0);
-      const sc = subR.getCell(startCol + 2 + i);
-      sc.value = sv; sc.numFmt = '$#,##0.00';
+      const sc = subR.getCell(firstMonthCol + i);
+      if (dyn) {
+        sc.value = { formula: `SUM(${colL(firstMonthCol + i)}${firstCatRow}:${colL(firstMonthCol + i)}${lastCatRow})` };
+      } else {
+        sc.value = catEntries.reduce((s, e) => s + (e.bm[m] || 0), 0);
+      }
+      sc.numFmt = '$#,##0.00';
       Object.assign(sc.style, subs);
     });
-    const stc = subR.getCell(startCol + 2 + months.length);
-    stc.value = subTotal; stc.numFmt = '$#,##0.00';
+    const stc = subR.getCell(totColNum);
+    if (dyn) {
+      stc.value = { formula: `SUM(${colL(firstMonthCol)}${pivotRow}:${colL(firstMonthCol + months.length - 1)}${pivotRow})` };
+    } else {
+      stc.value = catEntries.reduce((s, e) => s + e.total, 0);
+    }
+    stc.numFmt = '$#,##0.00';
     Object.assign(stc.style, subs);
-    subR.getCell(startCol + 1).style = subs;
+    subR.getCell(pivCatColNum).style = subs;
     subR.height = 17;
+
+    if (tipo === 'Ingreso') ingSubRowNum = pivotRow;
+    if (tipo === 'Egreso')  egrSubRowNum = pivotRow;
+    pivotRow++;
   }
 
-  // Fila de balance neto (si existen ambos tipos)
+  // ── Balance Neto ──────────────────────────────────────────────────────
   if (sections['Ingreso'] && sections['Egreso']) {
-    const balR = ws.getRow(pivotRow++);
-    balR.getCell(startCol + 1).value = 'BALANCE NETO';
+    const balR = ws.getRow(pivotRow);
+    balR.getCell(pivCatColNum).value = 'BALANCE NETO';
     months.forEach((m, i) => {
-      const ing = Object.values(sections['Ingreso']).reduce((s, bm) => s + (bm[m] || 0), 0);
-      const egr = Object.values(sections['Egreso']).reduce((s, bm) => s + (bm[m] || 0), 0);
-      const bal = ing - egr;
-      const bc  = balR.getCell(startCol + 2 + i);
-      bc.value = bal; bc.numFmt = '$#,##0.00';
-      bc.font  = { bold: true, name: 'Calibri', size: 10,
-                   color: { argb: 'FF' + (bal >= 0 ? '065F46' : '991B1B') } };
-      bc.fill  = balStyle.fill;
+      const bc = balR.getCell(firstMonthCol + i);
+      if (dyn && ingSubRowNum && egrSubRowNum) {
+        const mColL = colL(firstMonthCol + i);
+        bc.value = { formula: `${mColL}${ingSubRowNum}-${mColL}${egrSubRowNum}` };
+        bc.font  = { bold: true, name: 'Calibri', size: 10, color: { argb: 'FF1E293B' } };
+      } else {
+        const ing = Object.values(sections['Ingreso']).reduce((s, bm) => s + (bm[m] || 0), 0);
+        const egr = Object.values(sections['Egreso']).reduce((s, bm) => s + (bm[m] || 0), 0);
+        const bal = ing - egr;
+        bc.value = bal;
+        bc.font  = { bold: true, name: 'Calibri', size: 10,
+                     color: { argb: 'FF' + (bal >= 0 ? '065F46' : '991B1B') } };
+      }
+      bc.numFmt = '$#,##0.00';
+      bc.fill   = balStyle.fill;
     });
-    const ingTotal = Object.values(sections['Ingreso']).flat()
-      .reduce((s, bm) => s + Object.values(bm).reduce((a, v) => a + v, 0), 0);
-    const egrTotal = Object.values(sections['Egreso']).flat()
-      .reduce((s, bm) => s + Object.values(bm).reduce((a, v) => a + v, 0), 0);
-    // Fix: recalculate with correct structure
-    const ingT = Object.entries(sections['Ingreso']).reduce((s, [, bm]) => s + Object.values(bm).reduce((a, v) => a + v, 0), 0);
-    const egrT = Object.entries(sections['Egreso']).reduce((s, [, bm]) => s + Object.values(bm).reduce((a, v) => a + v, 0), 0);
-    const totBc = balR.getCell(startCol + 2 + months.length);
-    totBc.value = ingT - egrT; totBc.numFmt = '$#,##0.00';
-    totBc.font  = { bold: true, name: 'Calibri', size: 11,
-                    color: { argb: 'FF' + (ingT - egrT >= 0 ? '065F46' : '991B1B') } };
-    balR.getCell(startCol + 1).style = balStyle;
+    const totBc = balR.getCell(totColNum);
+    if (dyn && ingSubRowNum && egrSubRowNum) {
+      const tColL = colL(totColNum);
+      totBc.value = { formula: `${tColL}${ingSubRowNum}-${tColL}${egrSubRowNum}` };
+      totBc.font  = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FF1E293B' } };
+    } else {
+      const ingT = Object.entries(sections['Ingreso']).reduce((s, [, bm]) => s + Object.values(bm).reduce((a, v) => a + v, 0), 0);
+      const egrT = Object.entries(sections['Egreso']).reduce((s, [, bm]) => s + Object.values(bm).reduce((a, v) => a + v, 0), 0);
+      totBc.value = ingT - egrT;
+      totBc.font  = { bold: true, name: 'Calibri', size: 11,
+                      color: { argb: 'FF' + (ingT - egrT >= 0 ? '065F46' : '991B1B') } };
+    }
+    totBc.numFmt = '$#,##0.00';
+    totBc.fill   = balStyle.fill;
+    balR.getCell(pivCatColNum).style = balStyle;
     balR.height = 18;
   }
 }
