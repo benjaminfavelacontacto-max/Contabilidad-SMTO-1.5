@@ -2609,6 +2609,36 @@ tfoot strong { font-weight: 600; }
   box-shadow: 0 1px 0 var(--border-2);
 }
 
+/* ── Sortable pivot headers ── */
+.pivot-sortable {
+  cursor: pointer;
+  user-select: none;
+}
+.pivot-sortable:hover { background: var(--bg-3) !important; }
+
+.pvt-th-label { display: inline; }
+.pvt-sort-idle { opacity: 0.25; font-size: 10px; margin-left: 4px; }
+.pvt-sort-on   { font-size: 10px; margin-left: 4px; color: var(--accent); }
+
+/* ── Duplicate category warning ── */
+.pivot-dup-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin-bottom: 10px;
+  padding: 9px 12px;
+  background: rgba(245,158,11,0.08);
+  border: 1px solid rgba(245,158,11,0.28);
+  border-radius: 8px;
+  font-size: 12px;
+  color: #FBBF24;
+  line-height: 1.5;
+}
+.pivot-dup-pair {
+  font-weight: 600;
+  color: #FDE68A;
+}
+
 .pivot-cat-hdr {
   min-width: 180px;
   max-width: 260px;
@@ -2622,10 +2652,12 @@ tfoot strong { font-weight: 600; }
 
 .pivot-month-hdr {
   min-width: 100px;
+  text-align: right !important;
 }
 
 .pivot-total-hdr {
   min-width: 120px;
+  text-align: right !important;
   color: var(--text-2) !important;
   background: var(--bg-2) !important;
   border-left: 2px solid var(--border-2) !important;
