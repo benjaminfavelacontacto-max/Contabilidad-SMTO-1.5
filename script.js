@@ -3904,22 +3904,32 @@ function renderSheetPivot2(sheetName, idx, rows) {
     return;
   }
 
+  // Helper para detectar "Traspaso" en cualquier variante de escritura
+  const normalizeCat = s => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+  const isTraspaso   = cat => normalizeCat(cat) === 'traspaso';
+
   // Acumular: tipo → categoría → mes → monto
-  const sections = {};
+  // Los "Traspaso" van a un cubo separado: transfers { tipo → { mes → monto } }
+  const sections  = {};
+  const transfers = {}; // { 'Ingreso': { mes: monto }, 'Egreso': { mes: monto } }
   for (const r of pivotRows) {
     const tipo = r.tipo_registro || 'Sin tipo';
     const cat  = r.descripcion_corta || 'Sin categoría';
     const m    = r.mes;
     if (m == null) continue;
-    if (!sections[tipo])      sections[tipo]      = {};
-    if (!sections[tipo][cat]) sections[tipo][cat] = {};
-    sections[tipo][cat][m] = (sections[tipo][cat][m] || 0) + r.monto;
+    if (isTraspaso(cat)) {
+      if (!transfers[tipo]) transfers[tipo] = {};
+      transfers[tipo][m] = (transfers[tipo][m] || 0) + r.monto;
+    } else {
+      if (!sections[tipo])      sections[tipo]      = {};
+      if (!sections[tipo][cat]) sections[tipo][cat] = {};
+      sections[tipo][cat][m] = (sections[tipo][cat][m] || 0) + r.monto;
+    }
   }
 
   const tipos = ['Ingreso', 'Egreso'].filter(t => sections[t]);
 
-  // ── Detectar categorías duplicadas (misma escritura normalizada) ──
-  const normalizeCat = s => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+  // ── Detectar categorías duplicadas (misma escritura normalizada, excluye traspasos) ──
   const allCats = tipos.flatMap(t => Object.keys(sections[t] || {}));
   const normMap = {};
   const dupPairs = [];
@@ -4073,6 +4083,65 @@ function renderSheetPivot2(sheetName, idx, rows) {
   }
 
   html += `</tbody></table>`;
+
+  // ── Sección: Transferencias entre cuentas (Traspaso separado) ──────
+  const transferTipos = ['Ingreso', 'Egreso'].filter(t => transfers[t]);
+  if (transferTipos.length) {
+    html += `<div class="pivot-transfer-section">
+      <div class="pivot-transfer-hdr">
+        <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M7 16V4m0 0L3 8m4-4l4 4"/><path d="M17 8v12m0 0l4-4m-4 4l-4-4"/></svg>
+        Transferencias entre cuentas
+        <span class="pivot-transfer-note">excluidas del balance principal</span>
+      </div>
+      <table class="data-table pivot-table pivot-transfer-table">
+        <thead>
+          <tr>
+            <th class="pivot-cat-hdr">Tipo</th>
+            ${months.map(m => `<th class="text-right pivot-month-hdr">${MONTHS_ES[m]}</th>`).join('')}
+            <th class="text-right pivot-total-hdr">Total</th>
+          </tr>
+        </thead>
+        <tbody>`;
+
+    transferTipos.forEach(tipo => {
+      const byMonth = transfers[tipo];
+      const total   = Object.values(byMonth).reduce((s, v) => s + v, 0);
+      const color   = tipo === 'Ingreso' ? 'var(--income)' : 'var(--expense)';
+      const label   = tipo === 'Ingreso' ? '↑ Ingreso Traspaso' : '↓ Egreso Traspaso';
+      const cells   = months.map(m => {
+        const v = byMonth[m] || 0;
+        return `<td class="text-right pivot-amount${v ? '' : ' pivot-zero'}">${
+          v ? formatMoney(v) : '<span class="pivot-dash">—</span>'
+        }</td>`;
+      }).join('');
+      html += `<tr class="pivot-transfer-row">
+        <td class="pivot-cat-cell" style="color:${color}"><strong>${label}</strong></td>
+        ${cells}
+        <td class="text-right pivot-total-col" style="color:${color}"><strong>${formatMoney(total)}</strong></td>
+      </tr>`;
+    });
+
+    // Neto de transferencias (si hay ambos tipos)
+    if (transferTipos.length === 2) {
+      const ingT  = months.map(m => transfers['Ingreso'][m] || 0);
+      const egrT  = months.map(m => transfers['Egreso'][m]  || 0);
+      const netoM = months.map((_, i) => ingT[i] - egrT[i]);
+      const netoT = netoM.reduce((s, v) => s + v, 0);
+      const netoCells = netoM.map(v => {
+        const c = v === 0 ? 'var(--text-3)' : v > 0 ? 'var(--income)' : 'var(--expense)';
+        return `<td class="text-right pivot-amount" style="color:${c}"><strong>${formatMoney(v)}</strong></td>`;
+      }).join('');
+      const netoC = netoT === 0 ? 'var(--text-3)' : netoT > 0 ? 'var(--income)' : 'var(--expense)';
+      html += `<tr class="pivot-subtotal-row">
+        <td class="pivot-cat-cell"><strong>Neto Transferencias</strong></td>
+        ${netoCells}
+        <td class="text-right pivot-total-col" style="color:${netoC}"><strong>${formatMoney(netoT)}</strong></td>
+      </tr>`;
+    }
+
+    html += `</tbody></table></div>`;
+  }
+
   container.innerHTML = html;
 }
 
