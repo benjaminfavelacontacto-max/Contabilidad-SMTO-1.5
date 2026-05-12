@@ -2698,6 +2698,11 @@ async function exportConsolidatedExcel() {
     exportRows = exportRows.filter(r => r.cuenta === consolFilters2.cuenta || r.banco === consolFilters2.cuenta);
   }
 
+  // ── Agrupar por HOJA (cuenta individual) en lugar de banco ──────────
+  // Esto garantiza que cada cuenta quede en su propia pestaña,
+  // incluso cuando varias cuentas pertenecen al mismo banco.
+  const cuentasHojas = [...new Set(exportRows.map(r => r.hoja))].sort();
+  // Mantener lista de bancos únicos sólo para el Resumen
   const bancos = [...new Set(exportRows.map(r => r.banco))].sort();
 
   // ── HOJA: Concentrado ─────────────────────────────────────────────
@@ -2706,7 +2711,7 @@ async function exportConsolidatedExcel() {
     { header: 'Fecha',          key: 'fecha',    width: 13 },
     { header: 'Año',            key: 'anio',     width: 7  },
     { header: 'Mes',            key: 'mes',      width: 12 },
-    { header: 'Hoja',           key: 'hoja',     width: 22 },
+    { header: 'Cuenta',         key: 'hoja',     width: 28 },
     { header: 'Banco',          key: 'banco',    width: 14 },
     { header: 'Tipo de Cuenta', key: 'tipo',     width: 18 },
     { header: 'Moneda',         key: 'moneda',   width: 8  },
@@ -2749,14 +2754,17 @@ async function exportConsolidatedExcel() {
     row.height = 16;
   });
 
-  // ── HOJAS POR BANCO (Excel Tables + SUBTOTAL dinámico + Pivot formulas) ─
-  // Layout columnas: A=Fecha B=Año C=Mes D=Hoja E=TipoCuenta F=Moneda
+  // ── HOJA POR CUENTA (una pestaña por cada hoja/cuenta del Excel original) ──
+  // Layout columnas: A=Fecha B=Año C=Mes D=Banco E=TipoCuenta F=Moneda
   //                  G=Descripción H=Categoría I=Ingreso J=Egreso
-  const bankSubtotalInfo = {}; // { banco: { wsName, subtotalRowNum } }
+  // La clave de agrupación es r.hoja (nombre de hoja original = cuenta individual)
+  const cuentaSubtotalInfo = {}; // { hoja: { wsName, subtotalRowNum } }
 
-  for (const banco of bancos) {
-    const bRows  = exportRows.filter(r => r.banco === banco);
-    const wsName = banco.substring(0, 31);
+  for (const hoja of cuentasHojas) {
+    const bRows  = exportRows.filter(r => r.hoja === hoja);
+    // Nombre de pestaña: usar nombre de hoja original, truncado a 31 chars (límite Excel)
+    // y sanitizado para evitar caracteres inválidos en nombres de hoja
+    const wsName = hoja.replace(/[:\\/?*\[\]]/g, '_').substring(0, 31);
     const wsB    = wb.addWorksheet(wsName);
 
     // Anchos de columna (10 cols: A-J)
@@ -2792,7 +2800,7 @@ async function exportConsolidatedExcel() {
         { name: 'Fecha',       filterButton: true },
         { name: 'Año',         filterButton: true },
         { name: 'Mes',         filterButton: true },
-        { name: 'Hoja',        filterButton: true },
+        { name: 'Banco',       filterButton: true },
         { name: 'Tipo Cuenta', filterButton: true },
         { name: 'Moneda',      filterButton: true },
         { name: 'Descripción', filterButton: true },
@@ -2866,12 +2874,11 @@ async function exportConsolidatedExcel() {
     balCell.font   = { ...totalRowStyle.font, bold: true };
     wsB.getRow(balRowNum).height = 17;
 
-    bankSubtotalInfo[banco] = { wsName, subtotalRowNum };
+    cuentaSubtotalInfo[hoja] = { wsName, subtotalRowNum };
 
     wsB.views = [{ state: 'frozen', xSplit: 0, ySplit: 1 }];
 
     // ── Tabla dinámica a la DERECHA (startCol=11 → separator K, pivot desde L) ─
-    // dynParams indica las columnas de la tabla de movimientos para fórmulas dinámicas
     _addPivotToSheet(wsB, bRows, 11, C, {
       firstDataRow: 2,
       lastDataRow:  bRows.length + 1,
@@ -2883,22 +2890,24 @@ async function exportConsolidatedExcel() {
     });
   }
 
-  // ── HOJA: Resumen por institución (fórmulas dinámicas → SUBTOTAL) ─
+  // ── HOJA: Resumen por cuenta (una fila por cada cuenta/hoja original) ─
+  // Ahora el resumen refleja cuentas individuales, no bancos agrupados.
   const wsRes = wb.addWorksheet('Resumen');
-  // Nota: usamos ws.columns sólo para anchos; los headers los ponemos con addTable
-  [20, 18, 18, 18, 14].forEach((w, i) => { wsRes.getColumn(i + 1).width = w; });
+  [28, 14, 18, 18, 18, 14].forEach((w, i) => { wsRes.getColumn(i + 1).width = w; });
 
-  const resTableRows = bancos.map(banco => {
-    const { wsName, subtotalRowNum } = bankSubtotalInfo[banco];
-    // Referencias que apuntan a las celdas SUBTOTAL de cada pestaña
+  const resTableRows = cuentasHojas.map(hoja => {
+    const { wsName, subtotalRowNum } = cuentaSubtotalInfo[hoja];
+    const bancoDeHoja = exportRows.find(r => r.hoja === hoja)?.banco || '';
+    // Referencias que apuntan a las celdas SUBTOTAL de cada pestaña de cuenta
     const ingRef  = `'${wsName}'!I${subtotalRowNum}`;
     const egrRef  = `'${wsName}'!J${subtotalRowNum}`;
     return [
-      banco,
+      hoja,
+      bancoDeHoja,
       { formula: ingRef },
       { formula: egrRef },
       { formula: `${ingRef}-${egrRef}` },
-      exportRows.filter(r => r.banco === banco).length,
+      exportRows.filter(r => r.hoja === hoja).length,
     ];
   });
 
@@ -2909,7 +2918,8 @@ async function exportConsolidatedExcel() {
     totalsRow: false,
     style:     { theme: 'TableStyleMedium9', showRowStripes: false },
     columns: [
-      { name: 'Institución',    filterButton: true },
+      { name: 'Cuenta',         filterButton: true },
+      { name: 'Banco',          filterButton: true },
       { name: 'Total Ingresos', filterButton: true },
       { name: 'Total Egresos',  filterButton: true },
       { name: 'Balance Neto',   filterButton: true },
@@ -2921,15 +2931,17 @@ async function exportConsolidatedExcel() {
   applyHeader(wsRes.getRow(1));
   freezeTopRow(wsRes);
 
-  bancos.forEach((banco, bi) => {
-    const rowNum = bi + 2;
+  // Ahora 6 columnas: Cuenta, Banco, Ingresos, Egresos, Balance, Movimientos
+  cuentasHojas.forEach((hoja, hi) => {
+    const rowNum = hi + 2;
     const wsRow  = wsRes.getRow(rowNum);
     wsRow.height = 17;
-    const bg = bi % 2 === 0 ? C.GREY_LIGHT : C.WHITE;
-    for (let c = 1; c <= 5; c++) {
+    const bg = hi % 2 === 0 ? C.GREY_LIGHT : C.WHITE;
+    for (let c = 1; c <= 6; c++) {
       wsRes.getCell(rowNum, c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF' + bg } };
     }
-    ['B','C','D'].forEach((col, ki) => {
+    // Columnas C(Ingresos), D(Egresos), E(Balance) con formato moneda
+    ['C','D','E'].forEach((col, ki) => {
       const cell  = wsRes.getCell(`${col}${rowNum}`);
       cell.numFmt = '$#,##0.00';
       cell.font   = { bold: true, name: 'Calibri', size: 10,
@@ -2937,25 +2949,26 @@ async function exportConsolidatedExcel() {
     });
   });
 
-  // Fila total general (SUM de las celdas con fórmulas)
-  const lastBancoRow = bancos.length + 1;
+  // Fila total general (SUM de todas las cuentas)
+  const lastCuentaRow = cuentasHojas.length + 1;
   const totRes = wsRes.addRow([
     'TOTAL GENERAL',
-    { formula: `SUM(B2:B${lastBancoRow})` },
-    { formula: `SUM(C2:C${lastBancoRow})` },
-    { formula: `SUM(D2:D${lastBancoRow})` },
+    '',
+    { formula: `SUM(C2:C${lastCuentaRow})` },
+    { formula: `SUM(D2:D${lastCuentaRow})` },
+    { formula: `SUM(E2:E${lastCuentaRow})` },
     exportRows.length,
   ]);
   totRes.height = 20;
   totRes.eachCell(cell => Object.assign(cell.style, totalRowStyle));
-  ['B','C','D'].forEach(col => { wsRes.getCell(`${col}${lastBancoRow + 1}`).numFmt = '$#,##0.00'; });
+  ['C','D','E'].forEach(col => { wsRes.getCell(`${col}${lastCuentaRow + 1}`).numFmt = '$#,##0.00'; });
 
   // Nota explicativa bajo la tabla
-  const noteRow = wsRes.getRow(lastBancoRow + 3);
-  wsRes.getCell(`A${lastBancoRow + 3}`).value =
-    '⚡ Los totales de ingresos/egresos se actualizan automáticamente al filtrar en cada pestaña de banco.';
-  wsRes.getCell(`A${lastBancoRow + 3}`).font  = { italic: true, name: 'Calibri', size: 9, color: { argb: 'FF64748B' } };
-  wsRes.mergeCells(lastBancoRow + 3, 1, lastBancoRow + 3, 5);
+  const noteRow = wsRes.getRow(lastCuentaRow + 3);
+  wsRes.getCell(`A${lastCuentaRow + 3}`).value =
+    '⚡ Cada pestaña corresponde a una cuenta individual. Los totales se actualizan al filtrar en cada pestaña.';
+  wsRes.getCell(`A${lastCuentaRow + 3}`).font  = { italic: true, name: 'Calibri', size: 9, color: { argb: 'FF64748B' } };
+  wsRes.mergeCells(lastCuentaRow + 3, 1, lastCuentaRow + 3, 6);
   noteRow.height = 15;
 
   // ── Descargar ────────────────────────────────────────────────────
