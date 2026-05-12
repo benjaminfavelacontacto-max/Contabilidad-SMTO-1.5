@@ -3120,7 +3120,7 @@ function _addPivotToSheet(ws, bRows, startCol, C, dynParams) {
 
     const catEntries = Object.entries(sections[tipo])
       .map(([cat, bm]) => ({ cat, bm, total: Object.values(bm).reduce((s, v) => s + v, 0) }))
-      .sort((a, b) => b.total - a.total);
+      .sort((a, b) => a.cat.localeCompare(b.cat, 'es', { sensitivity: 'base' }));
 
     const firstCatRow = pivotRow;
 
